@@ -12,7 +12,7 @@
     const email = new URLSearchParams(window.location.search).get('email');
 
     grecaptcha.ready(function () {
-      grecaptcha.execute('YOUR_SITE_KEY', { action: 'redirect' }).then(function (token) {
+      grecaptcha.execute('6LcBjT4rAAAAAPbrgSEsHt9hmsGKh_6s3cZvvhqn', { action: 'redirect' }).then(function (token) {
         let url = `/verify-redirect?key=${key}&token=${token}`;
         if (email) url += `&email=${encodeURIComponent(email)}`;
         window.location.href = url;
