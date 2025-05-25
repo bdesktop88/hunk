@@ -66,10 +66,18 @@ app.post('/add-redirect', (req, res) => {
 app.get('/:key', (req, res) => {
   const { key } = req.params;
   const redirects = loadRedirects();
-  if (!redirects[key]) return res.status(404).send('Redirect not found.');
+
+  console.log('Trying redirect key:', key);
+  console.log('Redirects keys:', Object.keys(redirects));
+
+  if (!redirects[key]) {
+    console.log('Redirect key NOT found!');
+    return res.status(404).send('Redirect not found.');
+  }
 
   res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
 });
+
 
 // Verify reCAPTCHA and redirect
 app.get('/verify-redirect', async (req, res) => {
