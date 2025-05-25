@@ -4,7 +4,14 @@ const crypto = require('crypto');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-
+const initRedirects = () => {
+  const source = path.join(__dirname, 'redirects.json');
+  const destination = path.join('/tmp', 'redirects.json');
+  if (fs.existsSync(source) && !fs.existsSync(destination)) {
+    fs.copyFileSync(source, destination);
+  }
+};
+initRedirects();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -72,17 +79,13 @@ app.post('/add-redirect', (req, res) => {
 app.get('/:key', (req, res) => {
   const { key } = req.params;
   const redirects = loadRedirects();
-
   console.log('Trying redirect key:', key);
   console.log('Redirects keys:', Object.keys(redirects));
-
-  if (!redirects[key]) {
-    console.log('Redirect key NOT found!');
-    return res.status(404).send('Redirect not found.');
-  }
+  if (!redirects[key]) return res.status(404).send('Redirect not found.');
 
   res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
 });
+
 
 
 // Verify reCAPTCHA and redirect
