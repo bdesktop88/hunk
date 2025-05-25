@@ -1,47 +1,33 @@
 const express = require('express');
 const fs = require('fs');
-const path = require('path');
+const crypto = require('crypto');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
+const path = require('path');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/verify-redirect', async (req, res) => {
-  const key = req.query.key;
-  const token = req.query.token;
+// Replace this with your actual reCAPTCHA secret key
+const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86';
 
-  console.log('Trying redirect key:', key);
+app.use(express.static('public'));
+app.use(express.json());
 
-  const redirects = loadRedirects();
-  console.log('Redirects keys:', Object.keys(redirects));
-
-  if (!redirects[key]) {
-    console.log('Redirect key NOT found!');
-    return res.status(404).send('Redirect not found.');
-  }
-
-  try {
-    const secretKey = process.env.RECAPTCHA_SECRET_KEY || '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86';
-    const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`;
-    const response = await axios.post(verifyUrl);
-
-    if (response.data.success && response.data.score >= 0.5) {
-      res.redirect(redirects[key]);
-    } else {
-      res.status(403).send('reCAPTCHA verification failed');
-    }
-  } catch (error) {
-    console.error('reCAPTCHA verification error:', error);
-    res.status(500).send('Internal Server Error');
-  }
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: 'Too many requests. Please try again later.',
 });
+app.use(limiter);
 
+// File operations
 function loadRedirects() {
   try {
-    const redirectsFilePath = path.join(__dirname, 'redirects.json');
-    if (!fs.existsSync(redirectsFilePath)) {
-      fs.writeFileSync(redirectsFilePath, '{}');
+    if (!fs.existsSync('redirects.json')) {
+      fs.writeFileSync('redirects.json', '{}');
     }
-    const data = fs.readFileSync(redirectsFilePath, 'utf8');
+    const data = fs.readFileSync('redirects.json');
     return JSON.parse(data);
   } catch (err) {
     console.error('Error loading redirects:', err);
@@ -49,6 +35,79 @@ function loadRedirects() {
   }
 }
 
+function saveRedirects(redirects) {
+  fs.writeFileSync('redirects.json', JSON.stringify(redirects, null, 2));
+}
+
+function generateUniqueKey() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// Create new redirect
+app.post('/add-redirect', (req, res) => {
+  const { destination } = req.body;
+  if (!destination || !/^https?:\/\//.test(destination)) {
+    return res.status(400).json({ message: 'Invalid destination URL.' });
+  }
+
+  const key = generateUniqueKey();
+  const redirects = loadRedirects();
+  redirects[key] = destination;
+  saveRedirects(redirects);
+
+  const baseUrl = req.protocol + '://' + req.get('host');
+  res.json({
+    message: 'Redirect added successfully!',
+    redirectUrl: ${baseUrl}/${key},
+  });
+});
+
+// Serve reCAPTCHA page
+app.get('/:key', (req, res) => {
+  const { key } = req.params;
+  const redirects = loadRedirects();
+  if (!redirects[key]) return res.status(404).send('Redirect not found.');
+
+  res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
+});
+
+// Verify reCAPTCHA and redirect
+app.get('/verify-redirect', async (req, res) => {
+  const { key, token, email } = req.query;
+  const redirects = loadRedirects();
+
+  if (!redirects[key] || !token) return res.status(400).send('Invalid request.');
+
+  try {
+    const response = await axios.post(https://www.google.com/recaptcha/api/siteverify, null, {
+      params: {
+        secret: RECAPTCHA_SECRET,
+        response: token,
+      },
+    });
+
+    const data = response.data;
+    if (!data.success || data.score < 0.5 || data.action !== 'redirect') {
+      return res.status(403).send('reCAPTCHA verification failed.');
+    }
+
+    let destination = redirects[key];
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      const separator = destination.includes('?') ? '&' : '?';
+      destination += ${separator}email=${encodeURIComponent(email)};
+    }
+
+    res.redirect(destination);
+  } catch (error) {
+    console.error('reCAPTCHA error:', error.message);
+    res.status(500).send('Server error during verification.');
+  }
+});
+
+app.use((req, res) => {
+  res.status(404).send('Error: Invalid request.');
+});
+
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(Server running at http://localhost:${PORT});
 });
