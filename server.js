@@ -24,10 +24,11 @@ app.use(limiter);
 // File operations
 function loadRedirects() {
   try {
-    if (!fs.existsSync('redirects.json')) {
-      fs.writeFileSync('redirects.json', '{}');
+    const redirectsFilePath = path.join(__dirname, 'redirects.json');
+    if (!fs.existsSync(redirectsFilePath)) {
+      fs.writeFileSync(redirectsFilePath, '{}');
     }
-    const data = fs.readFileSync('redirects.json');
+    const data = fs.readFileSync(redirectsFilePath, 'utf8');
     return JSON.parse(data);
   } catch (err) {
     console.error('Error loading redirects:', err);
@@ -36,7 +37,12 @@ function loadRedirects() {
 }
 
 function saveRedirects(redirects) {
-  fs.writeFileSync('redirects.json', JSON.stringify(redirects, null, 2));
+  try {
+    const redirectsFilePath = path.join(__dirname, 'redirects.json');
+    fs.writeFileSync(redirectsFilePath, JSON.stringify(redirects, null, 2));
+  } catch (err) {
+    console.error('Error saving redirects:', err);
+  }
 }
 
 function generateUniqueKey() {
