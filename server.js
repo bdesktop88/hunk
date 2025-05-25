@@ -1,12 +1,9 @@
-// server.js
 const express = require('express');
 const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const jwt = require('jsonwebtoken');
-const geoip = require('geoip-lite');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,8 +11,8 @@ const PORT = process.env.PORT || 3000;
 const ENCRYPTION_SECRET = 'b394935aba846242ecf504683c2ebdf34e175e22993fb3e27f8866a4bb51eb85';
 const ENCRYPTION_KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
 const IV_LENGTH = 16;
-const JWT_SECRET = 'cf5d34c7c72c8c773a68bee7957d40d32c00251531287419530d586cd5a39708';
-const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86';//YOUR_RECAPTCHA_SECRET//
+
+const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86'; // 🔐 Replace with your actual secret
 
 app.use(express.static('public'));
 app.use(express.json());
@@ -27,6 +24,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// Encryption
 function encrypt(text) {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
@@ -44,6 +42,7 @@ function decrypt(encryptedText) {
   return decrypted;
 }
 
+// Redirects file
 function loadRedirects() {
   try {
     if (!fs.existsSync('redirects.json')) {
@@ -73,11 +72,6 @@ function generateUniqueKey() {
   return crypto.randomBytes(16).toString('hex');
 }
 
-function isBot(userAgent) {
-  const bots = /bot|crawl|spider|preview/i;
-  return bots.test(userAgent);
-}
-
 app.post('/add-redirect', (req, res) => {
   const { destination } = req.body;
   if (!destination || !/^https?:\/\//.test(destination)) {
@@ -98,9 +92,7 @@ app.post('/add-redirect', (req, res) => {
 
 app.get('/:key', (req, res) => {
   const { key } = req.params;
-  const email = req.query.email || '';
   const redirects = loadRedirects();
-
   if (!redirects[key]) return res.status(404).send('Redirect not found.');
 
   res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
@@ -116,8 +108,8 @@ app.get('/verify-redirect', async (req, res) => {
     const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
       params: {
         secret: RECAPTCHA_SECRET,
-        response: token
-      }
+        response: token,
+      },
     });
 
     const data = response.data;
@@ -133,7 +125,7 @@ app.get('/verify-redirect', async (req, res) => {
 
     res.redirect(destination);
   } catch (error) {
-    console.error('reCAPTCHA error:', error);
+    console.error('reCAPTCHA error:', error.message);
     res.status(500).send('Server error during verification.');
   }
 });
