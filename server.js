@@ -24,7 +24,7 @@ app.use(limiter);
 // File operations
 function loadRedirects() {
   try {
-    const redirectsFilePath = path.join(__dirname, 'redirects.json');
+    const redirectsFilePath = path.join('/tmp', 'redirects.json');
     if (!fs.existsSync(redirectsFilePath)) {
       fs.writeFileSync(redirectsFilePath, '{}');
     }
@@ -38,7 +38,7 @@ function loadRedirects() {
 
 function saveRedirects(redirects) {
   try {
-    const redirectsFilePath = path.join(__dirname, 'redirects.json');
+    const redirectsFilePath = path.join('/tmp', 'redirects.json');
     fs.writeFileSync(redirectsFilePath, JSON.stringify(redirects, null, 2));
   } catch (err) {
     console.error('Error saving redirects:', err);
