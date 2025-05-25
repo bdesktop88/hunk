@@ -4,18 +4,10 @@ const crypto = require('crypto');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const initRedirects = () => {
-  const source = path.join(__dirname, 'redirects.json');
-  const destination = path.join('/tmp', 'redirects.json');
-  if (fs.existsSync(source) && !fs.existsSync(destination)) {
-    fs.copyFileSync(source, destination);
-  }
-};
-initRedirects();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Replace this with your actual reCAPTCHA secret key
 const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86';
 
 app.use(express.static('public'));
@@ -28,14 +20,23 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// File operations
+const REDIRECTS_TMP_PATH = path.join('/tmp', 'redirects.json');
+const REDIRECTS_SOURCE_PATH = path.join(__dirname, 'redirects.json');
+
+function ensureRedirectsFileExists() {
+  if (!fs.existsSync(REDIRECTS_TMP_PATH)) {
+    if (fs.existsSync(REDIRECTS_SOURCE_PATH)) {
+      fs.copyFileSync(REDIRECTS_SOURCE_PATH, REDIRECTS_TMP_PATH);
+    } else {
+      fs.writeFileSync(REDIRECTS_TMP_PATH, '{}');
+    }
+  }
+}
+
 function loadRedirects() {
   try {
-    const redirectsFilePath = path.join('/tmp', 'redirects.json');
-    if (!fs.existsSync(redirectsFilePath)) {
-      fs.writeFileSync(redirectsFilePath, '{}');
-    }
-    const data = fs.readFileSync(redirectsFilePath, 'utf8');
+    ensureRedirectsFileExists();
+    const data = fs.readFileSync(REDIRECTS_TMP_PATH, 'utf8');
     return JSON.parse(data);
   } catch (err) {
     console.error('Error loading redirects:', err);
@@ -45,8 +46,8 @@ function loadRedirects() {
 
 function saveRedirects(redirects) {
   try {
-    const redirectsFilePath = path.join('/tmp', 'redirects.json');
-    fs.writeFileSync(redirectsFilePath, JSON.stringify(redirects, null, 2));
+    ensureRedirectsFileExists();
+    fs.writeFileSync(REDIRECTS_TMP_PATH, JSON.stringify(redirects, null, 2));
   } catch (err) {
     console.error('Error saving redirects:', err);
   }
@@ -56,7 +57,6 @@ function generateUniqueKey() {
   return crypto.randomBytes(16).toString('hex');
 }
 
-// Create new redirect
 app.post('/add-redirect', (req, res) => {
   const { destination } = req.body;
   if (!destination || !/^https?:\/\//.test(destination)) {
@@ -75,20 +75,14 @@ app.post('/add-redirect', (req, res) => {
   });
 });
 
-// Serve reCAPTCHA page
 app.get('/:key', (req, res) => {
   const { key } = req.params;
   const redirects = loadRedirects();
-  console.log('Trying redirect key:', key);
-  console.log('Redirects keys:', Object.keys(redirects));
   if (!redirects[key]) return res.status(404).send('Redirect not found.');
 
   res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
 });
 
-
-
-// Verify reCAPTCHA and redirect
 app.get('/verify-redirect', async (req, res) => {
   const { key, token, email } = req.query;
   const redirects = loadRedirects();
@@ -96,7 +90,7 @@ app.get('/verify-redirect', async (req, res) => {
   if (!redirects[key] || !token) return res.status(400).send('Invalid request.');
 
   try {
-    const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
+    const response = await axios.post('https://www.google.com/recaptcha/api/siteverify', null, {
       params: {
         secret: RECAPTCHA_SECRET,
         response: token,
