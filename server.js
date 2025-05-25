@@ -8,8 +8,11 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Replace this with your actual reCAPTCHA secret key
-const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86';
+const ENCRYPTION_SECRET = 'b394935aba846242ecf504683c2ebdf34e175e22993fb3e27f8866a4bb51eb85';
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
+const IV_LENGTH = 16;
+
+const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86'; // 🔐 Replace with your actual secret
 
 app.use(express.static('public'));
 app.use(express.json());
@@ -21,14 +24,36 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// File operations
+// Encryption
+function encrypt(text) {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return `${iv.toString('hex')}:${encrypted}`;
+}
+
+function decrypt(encryptedText) {
+  const [ivHex, encryptedData] = encryptedText.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+// Redirects file
 function loadRedirects() {
   try {
     if (!fs.existsSync('redirects.json')) {
       fs.writeFileSync('redirects.json', '{}');
     }
     const data = fs.readFileSync('redirects.json');
-    return JSON.parse(data);
+    const redirects = JSON.parse(data);
+    for (const key in redirects) {
+      redirects[key] = decrypt(redirects[key]);
+    }
+    return redirects;
   } catch (err) {
     console.error('Error loading redirects:', err);
     return {};
@@ -36,14 +61,17 @@ function loadRedirects() {
 }
 
 function saveRedirects(redirects) {
-  fs.writeFileSync('redirects.json', JSON.stringify(redirects, null, 2));
+  const encrypted = {};
+  for (const key in redirects) {
+    encrypted[key] = encrypt(redirects[key]);
+  }
+  fs.writeFileSync('redirects.json', JSON.stringify(encrypted, null, 2));
 }
 
 function generateUniqueKey() {
   return crypto.randomBytes(16).toString('hex');
 }
 
-// Create new redirect
 app.post('/add-redirect', (req, res) => {
   const { destination } = req.body;
   if (!destination || !/^https?:\/\//.test(destination)) {
@@ -58,11 +86,10 @@ app.post('/add-redirect', (req, res) => {
   const baseUrl = req.protocol + '://' + req.get('host');
   res.json({
     message: 'Redirect added successfully!',
-    redirectUrl: ${baseUrl}/${key},
+    redirectUrl: `${baseUrl}/${key}`,
   });
 });
 
-// Serve reCAPTCHA page
 app.get('/:key', (req, res) => {
   const { key } = req.params;
   const redirects = loadRedirects();
@@ -71,7 +98,6 @@ app.get('/:key', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
 });
 
-// Verify reCAPTCHA and redirect
 app.get('/verify-redirect', async (req, res) => {
   const { key, token, email } = req.query;
   const redirects = loadRedirects();
@@ -79,7 +105,7 @@ app.get('/verify-redirect', async (req, res) => {
   if (!redirects[key] || !token) return res.status(400).send('Invalid request.');
 
   try {
-    const response = await axios.post(https://www.google.com/recaptcha/api/siteverify, null, {
+    const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
       params: {
         secret: RECAPTCHA_SECRET,
         response: token,
@@ -94,7 +120,7 @@ app.get('/verify-redirect', async (req, res) => {
     let destination = redirects[key];
     if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       const separator = destination.includes('?') ? '&' : '?';
-      destination += ${separator}email=${encodeURIComponent(email)};
+      destination += `${separator}email=${encodeURIComponent(email)}`;
     }
 
     res.redirect(destination);
@@ -109,5 +135,5 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(Server running at http://localhost:${PORT});
+  console.log(`Server running at http://localhost:${PORT}`);
 });
