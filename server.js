@@ -1,139 +1,141 @@
 const express = require('express');
-const fs = require('fs');
 const crypto = require('crypto');
-const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
+const { addRedirect, getRedirect } = require('./db'); // Import DB functions
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const ENCRYPTION_SECRET = 'b394935aba846242ecf504683c2ebdf34e175e22993fb3e27f8866a4bb51eb85';
-const ENCRYPTION_KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
-const IV_LENGTH = 16;
+// Config
+const JWT_SECRET = 'your_strong_secret_key'; // Replace with a strong secret key
 
-const RECAPTCHA_SECRET = '6LcBjT4rAAAAANCGmLJtAqAiWaK2mxTENg93TI86'; // 🔐 Replace with your actual secret
-
+// Middleware
 app.use(express.static('public'));
 app.use(express.json());
 
+// Rate limiting: Protect endpoints from abuse
 const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: 'Too many requests. Please try again later.',
+    windowMs: 1 * 60 * 1000, // 1-minute window
+    max: 10,
+    message: 'Too many requests. Please try again later.',
 });
 app.use(limiter);
 
-// Encryption
-function encrypt(text) {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return `${iv.toString('hex')}:${encrypted}`;
-}
-
-function decrypt(encryptedText) {
-  const [ivHex, encryptedData] = encryptedText.split(':');
-  const iv = Buffer.from(ivHex, 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
-}
-
-// Redirects file
-function loadRedirects() {
-  try {
-    if (!fs.existsSync('redirects.json')) {
-      fs.writeFileSync('redirects.json', '{}');
-    }
-    const data = fs.readFileSync('redirects.json');
-    const redirects = JSON.parse(data);
-    for (const key in redirects) {
-      redirects[key] = decrypt(redirects[key]);
-    }
-    return redirects;
-  } catch (err) {
-    console.error('Error loading redirects:', err);
-    return {};
-  }
-}
-
-function saveRedirects(redirects) {
-  const encrypted = {};
-  for (const key in redirects) {
-    encrypted[key] = encrypt(redirects[key]);
-  }
-  fs.writeFileSync('redirects.json', JSON.stringify(encrypted, null, 2));
-}
-
+// Helper functions
 function generateUniqueKey() {
-  return crypto.randomBytes(16).toString('hex');
+    return crypto.randomBytes(8).toString('hex');
 }
 
+function generateToken(key) {
+    return jwt.sign({ key }, JWT_SECRET); // No expiration for now
+}
+
+// Routes
+
+// Add a new redirect
 app.post('/add-redirect', (req, res) => {
-  const { destination } = req.body;
-  if (!destination || !/^https?:\/\//.test(destination)) {
-    return res.status(400).json({ message: 'Invalid destination URL.' });
-  }
+    const { destination } = req.body;
 
-  const key = generateUniqueKey();
-  const redirects = loadRedirects();
-  redirects[key] = destination;
-  saveRedirects(redirects);
+    if (!destination || !/^https?:\/\//.test(destination)) {
+        return res.status(400).json({ message: 'Invalid destination URL.' });
+    }
 
-  const baseUrl = req.protocol + '://' + req.get('host');
-  res.json({
-    message: 'Redirect added successfully!',
-    redirectUrl: `${baseUrl}/${key}`,
-  });
-});
+    const key = generateUniqueKey();
+    const token = generateToken(key);
 
-app.get('/:key', (req, res) => {
-  const { key } = req.params;
-  const redirects = loadRedirects();
-  if (!redirects[key]) return res.status(404).send('Redirect not found.');
+    addRedirect(key, destination, token);
 
-  res.sendFile(path.join(__dirname, 'public', 'redirect.html'));
-});
+    const baseUrl = req.protocol + '://' + req.get('host');
 
-app.get('/verify-redirect', async (req, res) => {
-  const { key, token, email } = req.query;
-  const redirects = loadRedirects();
-
-  if (!redirects[key] || !token) return res.status(400).send('Invalid request.');
-
-  try {
-    const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
-      params: {
-        secret: RECAPTCHA_SECRET,
-        response: token,
-      },
+    res.json({
+        message: 'Redirect added successfully!',
+        redirectUrl: `${baseUrl}/${key}?token=${token}`,
+        pathRedirectUrl: `${baseUrl}/${key}/${token}`,
     });
-
-    const data = response.data;
-    if (!data.success || data.score < 0.5 || data.action !== 'redirect') {
-      return res.status(403).send('reCAPTCHA verification failed.');
-    }
-
-    let destination = redirects[key];
-    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      const separator = destination.includes('?') ? '&' : '?';
-      destination += `${separator}email=${encodeURIComponent(email)}`;
-    }
-
-    res.redirect(destination);
-  } catch (error) {
-    console.error('reCAPTCHA error:', error.message);
-    res.status(500).send('Server error during verification.');
-  }
 });
 
+// Handle redirects with optional email param
+app.get('/:key/:token/:email?', (req, res) => {
+    const { key, token, email: emailFromPath } = req.params;
+    const emailFromQuery = req.query.email;
+
+    let email = emailFromPath || emailFromQuery;
+
+    if (email) {
+        try {
+            email = decodeURIComponent(email);
+        } catch (err) {
+            return res.status(400).send('Invalid email encoding.');
+        }
+    }
+
+    const userAgent = req.headers['user-agent'] || '';
+    if (/bot|crawl|spider|preview/i.test(userAgent)) {
+        return res.status(403).send('Access denied.');
+    }
+
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).send('Invalid email format.');
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.key !== key) {
+            return res.status(403).send('Invalid token.');
+        }
+
+        const redirectData = getRedirect(key);
+
+        if (redirectData && redirectData.token === token) {
+            let destination = redirectData.destination;
+
+            if (email) {
+                destination = destination.endsWith('/') ? destination + email : destination + '/' + email;
+            }
+
+            return res.redirect(destination);
+        } else {
+            return res.status(404).send('Redirect not found.');
+        }
+    } catch {
+        return res.status(403).send('Invalid or expired token.');
+    }
+});
+
+// Handle redirects without email param
+app.get('/:key/:token', (req, res) => {
+    const { key, token } = req.params;
+
+    const userAgent = req.headers['user-agent'] || '';
+    if (/bot|crawl|spider|preview/i.test(userAgent)) {
+        return res.status(403).send('Access denied.');
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.key !== key) {
+            return res.status(403).send('Invalid token.');
+        }
+
+        const redirectData = getRedirect(key);
+
+        if (redirectData && redirectData.token === token) {
+            return res.redirect(redirectData.destination);
+        } else {
+            return res.status(404).send('Redirect not found.');
+        }
+    } catch {
+        return res.status(403).send('Invalid or expired token.');
+    }
+});
+
+// Fallback for invalid routes
 app.use((req, res) => {
-  res.status(404).send('Error: Invalid request.');
+    res.status(404).send('Error: Invalid request.');
 });
 
+// Start the server
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running at http://localhost:${PORT}`);
 });
