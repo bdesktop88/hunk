@@ -2,31 +2,29 @@ const express = require('express');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const JWT_SECRET = 'your_strong_secret_key'; // Replace this with a secure key
+const JWT_SECRET = 'your_strong_secret_key'; // replace securely
 const ENCRYPTION_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest();
 const IV_LENGTH = 16;
 
 const dbPath = process.env.RENDER ? '/tmp/redirects.db' : './redirects.db';
-const db = new Database(dbPath);
+const db = new sqlite3.Database(dbPath);
 
-// Create redirects table if not exists
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS redirects (
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS redirects (
     key TEXT PRIMARY KEY,
     token TEXT NOT NULL,
     destination TEXT NOT NULL
-  )
-`).run();
+  )`);
+});
 
 app.use(express.static('public'));
 app.use(express.json());
 
-// Rate limiter middleware
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -59,7 +57,6 @@ function generateToken(key) {
   return jwt.sign({ key }, JWT_SECRET);
 }
 
-// Add a new redirect
 app.post('/add-redirect', (req, res) => {
   const { destination } = req.body;
 
@@ -69,30 +66,36 @@ app.post('/add-redirect', (req, res) => {
 
   const key = generateUniqueKey();
   const token = generateToken(key);
-
-  // Encrypt destination before storing
   const encryptedDestination = encrypt(destination);
 
-  // Insert into DB
   const stmt = db.prepare('INSERT INTO redirects (key, token, destination) VALUES (?, ?, ?)');
-  try {
-    stmt.run(key, token, encryptedDestination);
-  } catch (err) {
-    console.error('DB insert error:', err);
-    return res.status(500).json({ message: 'Internal server error.' });
-  }
+  stmt.run(key, token, encryptedDestination, function(err) {
+    if (err) {
+      console.error('DB insert error:', err);
+      return res.status(500).json({ message: 'Internal server error.' });
+    }
 
-  const baseUrl = req.protocol + '://' + req.get('host');
-
-  res.json({
-    message: 'Redirect added successfully!',
-    redirectUrl: `${baseUrl}/${key}?token=${token}`,
-    pathRedirectUrl: `${baseUrl}/${key}/${token}`,
+    const baseUrl = req.protocol + '://' + req.get('host');
+    res.json({
+      message: 'Redirect added successfully!',
+      redirectUrl: `${baseUrl}/${key}?token=${token}`,
+      pathRedirectUrl: `${baseUrl}/${key}/${token}`,
+    });
   });
 });
 
-// Handle redirect with token and optional email
-app.get('/:key/:token/:email?', (req, res) => {
+// Async function to get redirect by key from DB
+function getRedirect(key) {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT token, destination FROM redirects WHERE key = ?', [key], (err, row) => {
+      if (err) return reject(err);
+      if (!row) return resolve(null);
+      resolve(row);
+    });
+  });
+}
+
+app.get('/:key/:token/:email?', async (req, res) => {
   const { key, token, email: emailFromPath } = req.params;
   const emailFromQuery = req.query.email;
   let email = emailFromPath || emailFromQuery;
@@ -118,8 +121,7 @@ app.get('/:key/:token/:email?', (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     if (decoded.key !== key) throw new Error('Invalid token');
 
-    // Fetch from DB
-    const row = db.prepare('SELECT destination FROM redirects WHERE key = ?').get(key);
+    const row = await getRedirect(key);
     if (!row) return res.status(404).send('Redirect not found.');
 
     const destination = decrypt(row.destination);
@@ -136,8 +138,7 @@ app.get('/:key/:token/:email?', (req, res) => {
   }
 });
 
-// Handle redirect with token only (no email)
-app.get('/:key/:token', (req, res) => {
+app.get('/:key/:token', async (req, res) => {
   const { key, token } = req.params;
 
   const userAgent = req.headers['user-agent'] || '';
@@ -149,7 +150,7 @@ app.get('/:key/:token', (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     if (decoded.key !== key) throw new Error('Invalid token');
 
-    const row = db.prepare('SELECT destination FROM redirects WHERE key = ?').get(key);
+    const row = await getRedirect(key);
     if (!row) return res.status(404).send('Redirect not found.');
 
     const destination = decrypt(row.destination);
@@ -159,7 +160,6 @@ app.get('/:key/:token', (req, res) => {
   }
 });
 
-// Catch all for invalid routes
 app.use((req, res) => {
   res.status(404).send('Error: Invalid request.');
 });
