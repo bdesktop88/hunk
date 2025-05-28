@@ -1,21 +1,17 @@
+
 {
-  "name": "redirect-app",
-  "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": "",
-  "license": "ISC",
+    "name": "direct",
+    "version": "1.0.0",
+    "main": "server.js",
+    "scripts": {
+      "start": "node server.js",
+      "build": "echo 'No build step required for this app'"
+    },
   "dependencies": {
-    "body-parser": "^2.2.0",
-    "express": "^5.1.0",
-    "express-rate-limit": "^7.5.0",
-    "node-fetch": "^3.3.2",
-    "sqlite3": "^5.1.7",
-    "uuid": "^11.1.0",
-    "jsonwebtoken": "^9.0.2"
-  }
+  "better-sqlite3": "^8.3.0",
+  "express": "^5.1.0",
+  "express-rate-limit": "^7.5.0",
+  "jsonwebtoken": "^9.0.0"
+}
+
 }
