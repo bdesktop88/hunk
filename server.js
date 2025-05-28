@@ -38,6 +38,7 @@ app.post('/add-redirect', (req, res) => {
     const { destination } = req.body;
 
     if (!destination || !/^https?:\/\//.test(destination)) {
+        console.log('Invalid destination:', destination);
         return res.status(400).json({ message: 'Invalid destination URL.' });
     }
 
@@ -46,9 +47,10 @@ app.post('/add-redirect', (req, res) => {
 
     db.addRedirect(key, destination, token, (err) => {
         if (err) {
-            console.error('DB error:', err);
+            console.error('DB error on addRedirect:', err);
             return res.status(500).json({ message: 'Failed to save redirect.' });
         }
+        console.log('Redirect saved:', { key, destination, token });
 
         const baseUrl = req.protocol + '://' + req.get('host');
         res.json({
@@ -77,11 +79,17 @@ app.get('/:key/:token', (req, res) => {
         const decoded = jwt.verify(token, JWT_SECRET);
 
         db.getRedirect(key, (err, row) => {
-            if (err || !row) {
+            if (err) {
+                console.error('DB error on getRedirect:', err);
+                return res.status(500).send('Server error.');
+            }
+            if (!row) {
+                console.log('Redirect not found for key:', key);
                 return res.status(404).send('Redirect not found.');
             }
 
             if (row.token !== token) {
+                console.log('Invalid token for key:', key);
                 return res.status(403).send('Invalid token.');
             }
 
@@ -90,9 +98,11 @@ app.get('/:key/:token', (req, res) => {
                 destination = destination.endsWith('/') ? destination + email : `${destination}/${email}`;
             }
 
+            console.log('Redirecting to:', destination);
             res.redirect(destination);
         });
     } catch (err) {
+        console.log('JWT verification failed:', err.message);
         res.status(403).send('Invalid or expired token.');
     }
 });
