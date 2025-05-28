@@ -1,141 +1,123 @@
 const express = require('express');
-const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
 const rateLimit = require('express-rate-limit');
-const { addRedirect, getRedirect } = require('./db'); // Import DB functions
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const { addRedirect, getRedirect } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Config
-const JWT_SECRET = 'your_strong_secret_key'; // Replace with a strong secret key
+// Secret key for JWT token generation
+const JWT_SECRET = process.env.JWT_SECRET || 'your-very-secure-secret';
 
 // Middleware
-app.use(express.static('public'));
-app.use(express.json());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// Rate limiting: Protect endpoints from abuse
+// Rate limit
 const limiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1-minute window
-    max: 10,
-    message: 'Too many requests. Please try again later.',
+  windowMs: 60 * 1000,
+  max: 30,
 });
 app.use(limiter);
 
-// Helper functions
-function generateUniqueKey() {
-    return crypto.randomBytes(8).toString('hex');
-}
+// Serve homepage
+app.get('/', (req, res) => {
+  res.send('Redirect service running.');
+});
 
+// Generate token
 function generateToken(key) {
-    return jwt.sign({ key }, JWT_SECRET); // No expiration for now
+  return jwt.sign({ key }, JWT_SECRET, { expiresIn: '1d' });
 }
 
-// Routes
+function generateUniqueKey() {
+  return uuidv4().split('-')[0];
+}
 
-// Add a new redirect
+// Add redirect
 app.post('/add-redirect', (req, res) => {
-    const { destination } = req.body;
+  const { destination } = req.body;
 
-    if (!destination || !/^https?:\/\//.test(destination)) {
-        return res.status(400).json({ message: 'Invalid destination URL.' });
+  if (!destination || !/^https?:\/\//.test(destination)) {
+    return res.status(400).json({ message: 'Invalid destination URL.' });
+  }
+
+  const key = generateUniqueKey();
+  const token = generateToken(key);
+
+  addRedirect(key, destination, token, (err) => {
+    if (err) {
+      console.error('DB insert error:', err);
+      return res.status(500).json({ message: 'Internal error storing redirect.' });
     }
-
-    const key = generateUniqueKey();
-    const token = generateToken(key);
-
-    addRedirect(key, destination, token);
 
     const baseUrl = req.protocol + '://' + req.get('host');
 
     res.json({
-        message: 'Redirect added successfully!',
-        redirectUrl: `${baseUrl}/${key}?token=${token}`,
-        pathRedirectUrl: `${baseUrl}/${key}/${token}`,
+      message: 'Redirect added successfully!',
+      redirectUrl: `${baseUrl}/${key}?token=${token}`,
+      pathRedirectUrl: `${baseUrl}/${key}/${token}`,
     });
+  });
 });
 
-// Handle redirects with optional email param
-app.get('/:key/:token/:email?', (req, res) => {
-    const { key, token, email: emailFromPath } = req.params;
-    const emailFromQuery = req.query.email;
+// Redirect handler (query token)
+app.get('/:key', (req, res) => {
+  const { key } = req.params;
+  const { token, email } = req.query;
 
-    let email = emailFromPath || emailFromQuery;
+  if (!token) return res.status(400).send('Token required.');
 
-    if (email) {
-        try {
-            email = decodeURIComponent(email);
-        } catch (err) {
-            return res.status(400).send('Invalid email encoding.');
-        }
-    }
+  try {
+    jwt.verify(token, JWT_SECRET);
 
-    const userAgent = req.headers['user-agent'] || '';
-    if (/bot|crawl|spider|preview/i.test(userAgent)) {
-        return res.status(403).send('Access denied.');
-    }
+    getRedirect(key, (err, redirectData) => {
+      if (err || !redirectData) return res.status(404).send('Redirect not found.');
+      if (redirectData.token !== token) return res.status(403).send('Invalid token.');
 
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        return res.status(400).send('Invalid email format.');
-    }
+      let destination = redirectData.destination;
+      if (email) {
+        destination = destination.endsWith('/')
+          ? destination + email
+          : destination + '/' + email;
+      }
 
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.key !== key) {
-            return res.status(403).send('Invalid token.');
-        }
-
-        const redirectData = getRedirect(key);
-
-        if (redirectData && redirectData.token === token) {
-            let destination = redirectData.destination;
-
-            if (email) {
-                destination = destination.endsWith('/') ? destination + email : destination + '/' + email;
-            }
-
-            return res.redirect(destination);
-        } else {
-            return res.status(404).send('Redirect not found.');
-        }
-    } catch {
-        return res.status(403).send('Invalid or expired token.');
-    }
+      return res.redirect(destination);
+    });
+  } catch (err) {
+    return res.status(403).send('Invalid or expired token.');
+  }
 });
 
-// Handle redirects without email param
+// Redirect handler (path token)
 app.get('/:key/:token', (req, res) => {
-    const { key, token } = req.params;
+  const { key, token } = req.params;
+  const { email } = req.query;
 
-    const userAgent = req.headers['user-agent'] || '';
-    if (/bot|crawl|spider|preview/i.test(userAgent)) {
-        return res.status(403).send('Access denied.');
-    }
+  try {
+    jwt.verify(token, JWT_SECRET);
 
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.key !== key) {
-            return res.status(403).send('Invalid token.');
-        }
+    getRedirect(key, (err, redirectData) => {
+      if (err || !redirectData) return res.status(404).send('Redirect not found.');
+      if (redirectData.token !== token) return res.status(403).send('Invalid token.');
 
-        const redirectData = getRedirect(key);
+      let destination = redirectData.destination;
+      if (email) {
+        destination = destination.endsWith('/')
+          ? destination + email
+          : destination + '/' + email;
+      }
 
-        if (redirectData && redirectData.token === token) {
-            return res.redirect(redirectData.destination);
-        } else {
-            return res.status(404).send('Redirect not found.');
-        }
-    } catch {
-        return res.status(403).send('Invalid or expired token.');
-    }
+      return res.redirect(destination);
+    });
+  } catch (err) {
+    return res.status(403).send('Invalid or expired token.');
+  }
 });
 
-// Fallback for invalid routes
-app.use((req, res) => {
-    res.status(404).send('Error: Invalid request.');
-});
-
-// Start the server
+// Start server
 app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
