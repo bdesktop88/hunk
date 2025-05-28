@@ -1,17 +1,17 @@
-
 {
-    "name": "direct",
-    "version": "1.0.0",
-    "main": "server.js",
-    "scripts": {
-      "start": "node server.js",
-      "build": "echo 'No build step required for this app'"
-    },
+  "name": "redirect-app",
+  "version": "1.0.0",
+  "description": "Redirect app with JWT tokens and SQLite storage",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-  "better-sqlite3": "^8.3.0",
-  "express": "^5.1.0",
-  "express-rate-limit": "^7.5.0",
-  "jsonwebtoken": "^9.0.0"
-}
-
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "jsonwebtoken": "^9.0.0",
+    "sqlite3": "^5.1.6"
+  }
 }
