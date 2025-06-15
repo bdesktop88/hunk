@@ -1,15 +1,18 @@
-bashCopy code
-# Use the official Node.js image as the base image
-FROM node:18
+# Use an official Node.js runtime as a base image
+FROM node:20-alpine
 
-# Set the working directory in the container
+# Create app directory
 WORKDIR /app
 
-# Copy the application files into the working directory
-COPY . /app
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm install --production
 
-# Install the application dependencies
-RUN npm install
+# Copy the rest of the application
+COPY . .
 
-# Define the entry point for the container
+# Expose the port your app runs on
+EXPOSE 3000
+
+# Start the application
 CMD ["npm", "start"]
